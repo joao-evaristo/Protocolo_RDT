@@ -63,27 +63,18 @@ void expected_seq_num (struct RDT_Packet packet)
         if (packet.seq_num == 1)
         {
             next_seq_num = 0;
-          printf("nextack = %d\n", next_seq_num);
+          printf("\nnextack = %d\n", next_seq_num);
         }
         else
         {
             next_seq_num = 1;
-          printf("nextack = %d\n", next_seq_num);
+          printf("\nnextack = %d\n", next_seq_num);
         }
     }
 
 
-int rdt_recv(int socketfd, struct sockaddr_in *server_address, int num_pckt)
-{   
-    struct timeval timeout;
-    timeout.tv_sec = 10;  // segundos
-    timeout.tv_usec = 0; // microssegundos
-
-    // timeout para recebimento
-    if (setsockopt(socketfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0){
-        perror("setsockopt(..., SO_RCVTIMEO ,...");
-        return -1;
-      }
+void rdt_recv(int socketfd, struct sockaddr_in *server_address, int num_pckt)
+{
     struct RDT_Packet packet;
     int i = 0;
     int last_ack = 0;
@@ -97,60 +88,59 @@ int rdt_recv(int socketfd, struct sockaddr_in *server_address, int num_pckt)
         do
         {
             messageReceived = recvfrom(socketfd, &packet, sizeof(packet), MSG_WAITALL, (struct sockaddr *)server_address, &tolen);
-            memcpy(buffer, packet.data, sizeof(buffer));
-            unsigned int expected_checksum = adler32(buffer, strlen((char *)buffer));// payload é armazenado no buffer para realizar checksum
             if(messageReceived == -1){
                 send_ack(socketfd, server_address, last_ack);
                 printf("Erro ao receber pacote. Aguardando reenvio...");
               }
           else {
-            if(expected_checksum != packet.checksum){
-              printf("Erro na soma de verificação. Aguardando reenvio...");
-            } else {
-              printf("\n");
+            memcpy(buffer, packet.data, sizeof(buffer)); // payload é armazenado no buffer para realizar checksum
+            printf("\n");
             printf("Pacote recebido com sucesso\n");
             printf("O contéudo do pacote é: %s\n", packet.data);
             printf("O número de sequência do pacote é: %d, e o ack é: %d\n", packet.seq_num, packet.ack);
             
             if (packet.seq_num != next_seq_num) 
             {  // sequencia de n° do pacote está errada?
-                printf("Número de sequência errada. Aguardando reenvio..\n");
+                printf("Número de sequência errada. Aguardando reenvio do pacote...");
                 send_ack(socketfd, server_address, last_ack); // envia ack do último pacote certo
             }
             else{
-                printf("Número de sequência Correta.\n");
+                printf("Número de sequência Correta.");
                 send_ack(socketfd, server_address, packet.ack); // envia ack do pacote atual
             }
-            }
-            
           }
           timeoutMax += 1;
         } while ((messageReceived == -1 || packet.seq_num != next_seq_num || adler32(buffer, strlen((char *)buffer)) != packet.checksum) && timeoutMax < 8); //enquanto o pacote estiver errado, será requisitado o reenvio
         last_ack = packet.ack;
         expected_seq_num(packet); //parâmetros para o próximo pacote
         pacotes_recebidos ++;
-        printf("\n");
-        printf("%d\n", pacotes_recebidos);
+        printf("%d", pacotes_recebidos);
     }
-return 0;
 }
 
 void rdt_send(int socketfd, struct sockaddr_in *server_address, char *request, int request_number)
 {
-    int check_loss = -1;
-    while(check_loss != 0){
-      int check = sendto(socketfd, (const char *)request, strlen(request), MSG_CONFIRM, (const struct sockaddr *)server_address, sizeof(*server_address));
+    int check = 0;
+    while(check != 1){
+    int check = sendto(socketfd, (const char *)request, strlen(request), MSG_CONFIRM, (const struct sockaddr *)server_address, sizeof(*server_address));
+      
+    }
+    
     if (check != -1)
     {
-        printf("Enviando requisição...\n");
-        check_loss = rdt_recv(socketfd, server_address, request_number);
+    	struct timeval timeout;
+    	timeout.tv_sec = 5;  // segundos
+    	timeout.tv_usec = 0; // microssegundos
+
+    	// timeout para recebimento
+    	if (setsockopt(socketfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+        perror("setsockopt(..., SO_RCVTIMEO ,...");
+        rdt_recv(socketfd, server_address, request_number);
     }
     else
     {
         printf("Erro: Falha ao enviar requisição ao servidor");
     }
-    }
-    
 }
 
 int main(int argc, char *argv[])

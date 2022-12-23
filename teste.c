@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define MAX_BUF_SIZE 1024
 #define MAX_DATA_SIZE 512
@@ -14,6 +15,7 @@ char buffer[MAX_BUF_SIZE];
 struct sockaddr_in client_address;
 int next_ack = 1;
 int next_seq_num = 0;
+
 
 
 // estrutura de um pacote RDT
@@ -76,6 +78,21 @@ void generate_payload(char *message, int request_number)
     }
 }
 
+
+void parameters(struct RDT_Packet packet){
+    if (packet.seq_num == 0){
+       next_seq_num = 1;
+    } else {
+       next_seq_num = 0;
+    }
+    if (packet.ack == 0)
+    {
+       next_ack = packet.ack+2;
+    } else {
+       next_ack = 1;
+    }
+}
+
 // envia um pacote para um socket
 void rdt_send(int socketfd, int request_number)
 {
@@ -89,64 +106,90 @@ void rdt_send(int socketfd, int request_number)
 
     int timeoutMax = 0; // variavel de controle para o maximo de timeouts tolerados pelo servidor
     int i = 0;
+    int resend_counter = 0;
     int tolen = sizeof(client_address);
+while (i < request_number && timeoutMax < 3){ 
+	// Caso não receba o ack 3 vezes consecutivas
 
-    while (i < request_number && timeoutMax < 3)
-    { // Caso não receba o ack 3 vezes consecutivas
+	char message[MAX_BUF_SIZE] = "";
+	generate_payload(message, request_number);
+	unsigned int aux_checksum = adler32(buffer, strlen((char *)buffer));
+	struct RDT_Packet packet = create_packet(next_seq_num, next_ack - 1, buffer, strlen(buffer), aux_checksum); // cria o pacote
+	int messageSent = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
 
-        char message[MAX_BUF_SIZE] = "";
-        generate_payload(message, request_number);
-        unsigned int aux_checksum = adler32(buffer, strlen((char*)buffer));
-        struct RDT_Packet packet = create_packet(next_seq_num, next_ack-1, buffer, strlen(buffer), aux_checksum); // cria o pacote
-        int messageSent = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
+	printf("Pacote %d, timeouts: %d\n", packet.seq_num, timeoutMax);
+	printf("O checksum do pacote é: %d\n", packet.checksum);
 
-        printf("Pacote %d, timeouts: %d\n", packet.seq_num, timeoutMax);
-        printf("O checksum do pacote é: %d\n", packet.checksum);
+	int resend = messageSent;
 
-        if (messageSent == -1)
-        {
-            perror("Erro ao enviar o pacote\n");
-            break;
-        }
-        memset(buffer, 0, sizeof(buffer));
+  bool resend_counter = false;
 
-        int ack_receive = recvfrom(socketfd, (char *)buffer, MAX_BUF_SIZE, MSG_WAITALL, (struct sockaddr *)&client_address, &tolen);
-        packet.ack = atoi(buffer);
-        timeoutMax++;
-        if (ack_receive == -1)
-        { // ack não recebido
-            printf("Ack não recebido\n");
-            int resend = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
-        }
-        else
-        {
-            printf("Ack: %d\n", packet.ack);
-            if (packet.seq_num == 0){
-               next_seq_num = 1;
-            } else {
-               next_seq_num = 0;
-            }
-            if (packet.ack != packet.seq_num)
-            {
-                printf("Erro: o ack está errado. Reenviando último pacote...\n");
-                int resend = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
-            }
-            else
-            {
-               if (packet.ack == 0)
-                {
-                    next_ack = packet.ack+2;
-                }
-                else 
-                {
-                    next_ack = 1;
-                }
-            }
-        }
-        timeoutMax = 0; // contador de envios é zerada
-        i++;
+	while(resend == -1 && timeoutMax < 3){
+		resend_counter = true;
+		printf("Erro: o ack está errado. Reenviando último pacote...\n");
+		resend = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
+
+		if(resend == -1)
+			timeoutMax++;
+	}
+	
+	if(timeoutMax < 3)
+		timeoutMax = 0;
+	else{
+		printf("TimeOut: Ack errado\n");
+		break;
+	}
+  
+	memset(buffer, 0, sizeof(buffer));
+
+	int ack_receive = recvfrom(socketfd, (char *)buffer, MAX_BUF_SIZE, MSG_WAITALL, (struct sockaddr *)&client_address, &tolen);
+	
+	int timeoutMaxAux = 0;
+	
+	while(ack_receive == -1 && timeoutMax < 3){ 
+		timeoutMax++;
+    resend_counter = true;
+		
+		while(resend == -1 && timeoutMaxAux < 3){
+			printf("Erro: o ack está errado. Reenviando último pacote...\n");
+			resend = sendto(socketfd, &packet, sizeof(struct RDT_Packet), MSG_CONFIRM, (struct sockaddr *)&client_address, tolen);
+
+			if(resend == -1)
+				timeoutMaxAux++;
+		}
+		
+		if(timeoutMaxAux < 3)
+			ack_receive = recvfrom(socketfd, (char *)buffer, MAX_BUF_SIZE, MSG_WAITALL, (struct sockaddr *)&client_address, &tolen);
+		else
+			timeoutMax = 3;
+	}
+	
+	if(timeoutMax < 3){
+		packet.ack = atoi(buffer);
+		timeoutMax = 0;
+	}
+	else{
+		printf("TimeOut: Ack não recebido\n");
+		break;
+	}
+	
+	printf("Ack: %d\n", packet.ack);
+	
+	if (packet.seq_num == 0)
+		next_seq_num = 1;
+	else
+		next_seq_num = 0;
+	
+	if (packet.ack == 0)
+		next_ack = packet.ack + 2;
+	else
+		next_ack = 1;
+	
+	if(!resend_counter)
+		i++;
     }
-}
+  }
+
 
 
 void rdt_recv(int socketfd)
